@@ -19,18 +19,19 @@
 
 ## Phase 5 — implementation tasks
 
-- [ ] Expand domain types for mandates, income events, proposals, portfolios, positions, transactions, rebalance events, snapshots, and structured response parts.
-- [ ] Replace the balance simulation with configurable allocation, seeded returns, drift detection, rebalance, contribution, and withdrawal functions.
-- [ ] Expand deterministic capacity rules for bonuses, raises, rent changes, emergencies, pauses, and withdrawals.
-- [ ] Expand Gemini schema/prompt and deterministic intent fallbacks.
-- [ ] Extend repositories and PostgreSQL migration for all durable entities.
-- [ ] Implement onboarding, risk poll, portfolio proposal, Auth0 approval, life-event poll, and weekly update application flows.
-- [ ] Add portfolio-card attachment generation and Spectrum-native response mapping.
-- [ ] Add persisted weekly scheduler behavior and minimal health endpoint.
-- [ ] Update README, architecture, demo script, Devpost copy, and repository description.
+- [x] Expand domain types for mandates, income events, proposals, portfolios, positions, transactions, rebalance events, snapshots, and structured response parts.
+- [x] Replace the balance simulation with configurable allocation, seeded returns, drift detection, rebalance, contribution, and withdrawal functions.
+- [x] Expand deterministic capacity rules for bonuses, raises, rent changes, emergencies, pauses, and withdrawals.
+- [x] Expand Gemini schema/prompt and deterministic intent fallbacks.
+- [x] Extend repositories and PostgreSQL migration for all durable entities.
+- [x] Implement onboarding, risk poll, portfolio proposal, Auth0 approval, life-event poll, and weekly update application flows.
+- [x] Add portfolio-card attachment generation and Spectrum-native response mapping.
+- [x] Add persisted weekly scheduler behavior and minimal health endpoint.
+- [x] Update README, architecture, demo script, and Devpost copy.
+- [ ] Set the exact repository description (the installed GitHub connector does not expose repository-metadata writes).
 
 ## Phase 6 — verification tasks
 
-- [ ] Add all required safety, portfolio, persistence, identity, verification, memory, and deletion tests.
-- [ ] Run formatting, typecheck, Vitest, build, and terminal/judge-flow smoke checks.
-- [ ] Publish the completed implementation to GitHub and verify repository metadata.
+- [x] Add all required safety, portfolio, persistence, identity, verification, memory, and deletion tests.
+- [x] Run formatting, typecheck, Vitest, build, and terminal/judge-flow smoke checks.
+- [x] Publish the completed implementation to GitHub and verify the branch contents.
