@@ -14,6 +14,9 @@ import { InMemoryRepository } from "./repository/memory.js";
 import { PostgresRepository } from "./repository/postgres.js";
 import { runSpectrum } from "./transport/spectrum.js";
 import { runTerminal } from "./transport/terminal.js";
+import { AlpacaBrokerageAdapter } from "./brokerage/alpaca.js";
+import { FakeBrokerageAdapter } from "./brokerage/fake.js";
+import { UnavailableBrokerageAdapter } from "./brokerage/brokerage.js";
 
 async function main(): Promise<void> {
   const config = loadConfig(process.env);
@@ -43,11 +46,36 @@ async function main(): Promise<void> {
           config.AUTH0_AUDIENCE,
         )
       : new UnconfiguredVerification();
+  const brokerage =
+    config.PENNY_BROKERAGE_PROVIDER === "alpaca"
+      ? new AlpacaBrokerageAdapter({
+          apiKey: requireValue(
+            config.ALPACA_BROKER_API_KEY,
+            "ALPACA_BROKER_API_KEY",
+          ),
+          apiSecret: requireValue(
+            config.ALPACA_BROKER_API_SECRET,
+            "ALPACA_BROKER_API_SECRET",
+          ),
+          baseUrl: config.ALPACA_BROKER_BASE_URL,
+        })
+      : config.PENNY_BROKERAGE_PROVIDER === "fake"
+        ? new FakeBrokerageAdapter(config.NODE_ENV)
+        : new UnavailableBrokerageAdapter();
   const service = new PennyService(
     repository,
     interpreter,
     verification,
     config.CONSENT_VERSION,
+    () => new Date(),
+    brokerage,
+    {
+      demoAccountId: config.ALPACA_DEMO_ACCOUNT_ID,
+      achRelationshipId: config.ALPACA_DEMO_ACH_RELATIONSHIP_ID,
+      accountApplication: parseAccountApplication(
+        config.ALPACA_DEMO_ACCOUNT_APPLICATION_JSON,
+      ),
+    },
   );
 
   if (process.argv.includes("--smoke")) {
@@ -64,6 +92,16 @@ async function main(): Promise<void> {
     requireValue(config.SPECTRUM_PROJECT_ID, "SPECTRUM_PROJECT_ID"),
     requireValue(config.SPECTRUM_PROJECT_SECRET, "SPECTRUM_PROJECT_SECRET"),
   );
+}
+
+function parseAccountApplication(
+  value: string | undefined,
+): Record<string, unknown> | undefined {
+  if (!value) return undefined;
+  const parsed: unknown = JSON.parse(value);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    throw new Error("ALPACA_DEMO_ACCOUNT_APPLICATION_JSON must be an object");
+  return parsed as Record<string, unknown>;
 }
 
 function startHealthServer(port: number): void {

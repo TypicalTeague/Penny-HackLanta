@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type {
   AuditEvent,
+  BrokerageAccountRecord,
+  BrokerageOrderRecord,
+  BrokerageSnapshot,
+  BrokerageTransferRecord,
   ConversationMemory,
   Mandate,
   Proposal,
@@ -21,6 +25,18 @@ export class InMemoryRepository implements PennyRepository {
   private readonly simulations = new Map<string, Simulation>();
   private readonly audit: AuditEvent[] = [];
   private readonly memories = new Map<string, ConversationMemory>();
+  private readonly brokerageAccounts = new Map<
+    string,
+    BrokerageAccountRecord
+  >();
+  private readonly brokerageTransfers = new Map<
+    string,
+    BrokerageTransferRecord
+  >();
+  private readonly brokerageTransferKeys = new Map<string, string>();
+  private readonly brokerageOrders = new Map<string, BrokerageOrderRecord>();
+  private readonly brokerageOrderKeys = new Map<string, string>();
+  private readonly brokerageSnapshots = new Map<string, BrokerageSnapshot>();
 
   async transaction<T>(
     operation: (repository: PennyRepository) => Promise<T>,
@@ -142,6 +158,18 @@ export class InMemoryRepository implements PennyRepository {
     this.users.delete(userId);
     this.memories.delete(userId);
     this.simulations.delete(userId);
+    this.brokerageAccounts.delete(userId);
+    this.brokerageSnapshots.delete(userId);
+    for (const [id, transfer] of this.brokerageTransfers)
+      if (transfer.userId === userId) {
+        this.brokerageTransfers.delete(id);
+        this.brokerageTransferKeys.delete(transfer.idempotencyKey);
+      }
+    for (const [id, order] of this.brokerageOrders)
+      if (order.userId === userId) {
+        this.brokerageOrders.delete(id);
+        this.brokerageOrderKeys.delete(order.clientOrderId);
+      }
     for (const [id, proposal] of this.proposals)
       if (proposal.userId === userId) {
         this.proposals.delete(id);
@@ -175,6 +203,52 @@ export class InMemoryRepository implements PennyRepository {
   async saveSimulation(simulation: Simulation): Promise<void> {
     this.simulations.set(simulation.userId, structuredClone(simulation));
   }
+  async getBrokerageAccount(
+    userId: string,
+  ): Promise<BrokerageAccountRecord | undefined> {
+    const value = this.brokerageAccounts.get(userId);
+    return value ? structuredClone(value) : undefined;
+  }
+  async saveBrokerageAccount(account: BrokerageAccountRecord): Promise<void> {
+    this.brokerageAccounts.set(account.userId, structuredClone(account));
+  }
+  async getBrokerageTransferByKey(
+    idempotencyKey: string,
+  ): Promise<BrokerageTransferRecord | undefined> {
+    const id = this.brokerageTransferKeys.get(idempotencyKey);
+    const value = id ? this.brokerageTransfers.get(id) : undefined;
+    return value ? structuredClone(value) : undefined;
+  }
+  async saveBrokerageTransfer(
+    transfer: BrokerageTransferRecord,
+  ): Promise<void> {
+    this.brokerageTransfers.set(transfer.id, structuredClone(transfer));
+    this.brokerageTransferKeys.set(transfer.idempotencyKey, transfer.id);
+  }
+  async listBrokerageOrders(
+    proposalId: string,
+  ): Promise<BrokerageOrderRecord[]> {
+    return structuredClone(
+      [...this.brokerageOrders.values()].filter(
+        (order) => order.proposalId === proposalId,
+      ),
+    );
+  }
+  async saveBrokerageOrder(order: BrokerageOrderRecord): Promise<void> {
+    const existingId = this.brokerageOrderKeys.get(order.clientOrderId);
+    if (existingId && existingId !== order.id) return;
+    this.brokerageOrders.set(order.id, structuredClone(order));
+    this.brokerageOrderKeys.set(order.clientOrderId, order.id);
+  }
+  async getBrokerageSnapshot(
+    userId: string,
+  ): Promise<BrokerageSnapshot | undefined> {
+    const value = this.brokerageSnapshots.get(userId);
+    return value ? structuredClone(value) : undefined;
+  }
+  async saveBrokerageSnapshot(snapshot: BrokerageSnapshot): Promise<void> {
+    this.brokerageSnapshots.set(snapshot.userId, structuredClone(snapshot));
+  }
   async appendAudit(event: AuditEvent): Promise<void> {
     this.audit.push(structuredClone(event));
   }
@@ -196,6 +270,12 @@ export class InMemoryRepository implements PennyRepository {
       simulations: [...this.simulations],
       audit: this.audit,
       memories: [...this.memories],
+      brokerageAccounts: [...this.brokerageAccounts],
+      brokerageTransfers: [...this.brokerageTransfers],
+      brokerageTransferKeys: [...this.brokerageTransferKeys],
+      brokerageOrders: [...this.brokerageOrders],
+      brokerageOrderKeys: [...this.brokerageOrderKeys],
+      brokerageSnapshots: [...this.brokerageSnapshots],
     });
   }
 
@@ -209,6 +289,12 @@ export class InMemoryRepository implements PennyRepository {
     restoreMap(this.proposalKeys, snapshot.proposalKeys);
     restoreMap(this.simulations, snapshot.simulations);
     restoreMap(this.memories, snapshot.memories);
+    restoreMap(this.brokerageAccounts, snapshot.brokerageAccounts);
+    restoreMap(this.brokerageTransfers, snapshot.brokerageTransfers);
+    restoreMap(this.brokerageTransferKeys, snapshot.brokerageTransferKeys);
+    restoreMap(this.brokerageOrders, snapshot.brokerageOrders);
+    restoreMap(this.brokerageOrderKeys, snapshot.brokerageOrderKeys);
+    restoreMap(this.brokerageSnapshots, snapshot.brokerageSnapshots);
     this.audit.splice(0, this.audit.length, ...snapshot.audit);
   }
 }

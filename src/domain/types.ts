@@ -94,9 +94,96 @@ export interface Proposal {
   type?: "activate" | "pause" | "contribution" | "withdrawal" | "risk_change";
   requestedAmountCents?: number;
   riskPreference?: RiskPreference;
-  status: "pending" | "approved" | "rejected";
+  status:
+    | "pending"
+    | "approved"
+    | "rejected"
+    | "INTENT_RECEIVED"
+    | "PROPOSAL_CREATED"
+    | "AWAITING_CONFIRMATION"
+    | "VERIFIED"
+    | "SUBMITTING"
+    | "EXECUTED"
+    | "PARTIALLY_FILLED"
+    | "REJECTED"
+    | "CANCELLED";
+  confirmationCode?: string;
+  expiresAt?: string;
+  confirmedAt?: string;
+  allocation?: BrokerageAllocation[];
+  expectedOrders?: ExpectedBrokerageOrder[];
+  explanation?: string;
   idempotencyKey: string;
   createdAt: string;
+}
+
+export interface BrokerageAllocation {
+  assetClass: AssetClass;
+  symbol?: "VTI" | "BND";
+  weightBps: number;
+  amountCents: number;
+}
+
+export interface ExpectedBrokerageOrder {
+  symbol: "VTI" | "BND";
+  notionalCents: number;
+  side: "buy" | "sell";
+}
+
+export interface BrokerageAccountRecord {
+  userId: string;
+  provider: "alpaca" | "fake";
+  accountId: string;
+  accountNumber?: string;
+  status: string;
+  buyingPowerCents: number;
+  updatedAt: string;
+}
+
+export interface BrokerageTransferRecord {
+  id: string;
+  userId: string;
+  proposalId: string;
+  providerTransferId: string;
+  direction: "INCOMING" | "OUTGOING";
+  amountCents: number;
+  status: string;
+  idempotencyKey: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BrokerageOrderRecord {
+  id: string;
+  userId: string;
+  proposalId: string;
+  providerOrderId: string;
+  clientOrderId: string;
+  symbol: string;
+  side: "buy" | "sell";
+  notionalCents: number;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BrokeragePosition {
+  symbol: string;
+  quantity: string;
+  marketValueCents: number;
+  costBasisCents: number;
+}
+
+export interface BrokerageSnapshot {
+  id: string;
+  userId: string;
+  accountId: string;
+  portfolioValueCents: number;
+  cashCents: number;
+  buyingPowerCents: number;
+  positions: BrokeragePosition[];
+  simulated: true;
+  capturedAt: string;
 }
 
 export interface PortfolioPosition {

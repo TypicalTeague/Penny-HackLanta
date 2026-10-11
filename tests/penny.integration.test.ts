@@ -56,7 +56,10 @@ describe("Penny journey", () => {
     expect(expense.text).toContain("simulated paper portfolio");
     const risk = await service.handle(msg("m3", "Medium risk"));
     expect(risk.parts?.some((part) => part.type === "image")).toBe(true);
-    const approval = await service.handle(msg("m4", "approve"));
+    const pending = await repo.getUserContext(risk.userId!);
+    const approval = await service.handle(
+      msg("m4", `CONFIRM ${pending!.pendingProposal!.confirmationCode}`),
+    );
     expect(approval.text).toContain("Auth0");
     expect(await repo.getSimulationByUser(approval.userId!)).toBeUndefined();
     const confirmed = await service.completeVerification(
@@ -97,9 +100,11 @@ describe("Penny journey", () => {
     );
     await service.handle(msg("m1", "I have $100"));
     await service.handle(msg("m2", "I need $60 for textbooks"));
-    await service.handle(msg("m3", "Medium risk"));
-    const first = await service.handle(msg("m4", "approve"));
-    expect(await service.handle(msg("m4", "approve"))).toEqual({
+    const risk = await service.handle(msg("m3", "Medium risk"));
+    const pending = await repo.getUserContext(risk.userId!);
+    const confirmation = `CONFIRM ${pending!.pendingProposal!.confirmationCode}`;
+    const first = await service.handle(msg("m4", confirmation));
+    expect(await service.handle(msg("m4", confirmation))).toEqual({
       duplicate: true,
     });
     await service.completeVerification(
@@ -138,7 +143,7 @@ describe("Penny journey", () => {
     ).toContain("can’t receive deposits");
     expect(
       (await service.handle(msg("a6", "Did my order go through?"))).text,
-    ).toContain("No real order was placed");
+    ).toContain("No Alpaca sandbox orders");
   });
 
   it("asks when an expense amount is unclear", async () => {
@@ -189,8 +194,11 @@ describe("Penny journey", () => {
     );
     await service.handle(msg("b1", "I have $100"));
     await service.handle(msg("b2", "I need $60 for textbooks"));
-    await service.handle(msg("b3", "Medium risk"));
-    const approval = await service.handle(msg("b4", "approve"));
+    const risk = await service.handle(msg("b3", "Medium risk"));
+    const pending = await repo.getUserContext(risk.userId!);
+    const approval = await service.handle(
+      msg("b4", `CONFIRM ${pending!.pendingProposal!.confirmationCode}`),
+    );
     await service.completeVerification(
       approval.userId!,
       approval.verification!,
@@ -222,8 +230,11 @@ describe("Penny journey", () => {
     );
     await service.handle(msg("c1", "I have $100"));
     await service.handle(msg("c2", "I need $60 for textbooks"));
-    await service.handle(msg("c3", "Medium risk"));
-    const approval = await service.handle(msg("c4", "Approve plan"));
+    const risk = await service.handle(msg("c3", "Medium risk"));
+    const pending = await repo.getUserContext(risk.userId!);
+    const approval = await service.handle(
+      msg("c4", `CONFIRM ${pending!.pendingProposal!.confirmationCode}`),
+    );
     await service.completeVerification(
       approval.userId!,
       approval.verification!,

@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import type {
   AuditEvent,
+  BrokerageAccountRecord,
+  BrokerageOrderRecord,
+  BrokerageSnapshot,
+  BrokerageTransferRecord,
   ConversationMemory,
   Mandate,
   Proposal,
@@ -550,6 +554,103 @@ export class PostgresRepository implements PennyRepository {
         ],
       );
     }
+  }
+  async getBrokerageAccount(
+    userId: string,
+  ): Promise<BrokerageAccountRecord | undefined> {
+    const result = await this.pool.query<{ body: BrokerageAccountRecord }>(
+      "SELECT body FROM brokerage_accounts WHERE user_id=$1",
+      [userId],
+    );
+    return result.rows[0]?.body;
+  }
+  async saveBrokerageAccount(account: BrokerageAccountRecord): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO brokerage_accounts(user_id,provider,account_id,status,body,updated_at)
+       VALUES($1,$2,$3,$4,$5,now()) ON CONFLICT(user_id) DO UPDATE SET
+       provider=EXCLUDED.provider,account_id=EXCLUDED.account_id,status=EXCLUDED.status,
+       body=EXCLUDED.body,updated_at=now()`,
+      [
+        account.userId,
+        account.provider,
+        account.accountId,
+        account.status,
+        JSON.stringify(account),
+      ],
+    );
+  }
+  async getBrokerageTransferByKey(
+    idempotencyKey: string,
+  ): Promise<BrokerageTransferRecord | undefined> {
+    const result = await this.pool.query<{ body: BrokerageTransferRecord }>(
+      "SELECT body FROM brokerage_transfers WHERE idempotency_key=$1",
+      [idempotencyKey],
+    );
+    return result.rows[0]?.body;
+  }
+  async saveBrokerageTransfer(
+    transfer: BrokerageTransferRecord,
+  ): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO brokerage_transfers(id,user_id,proposal_id,idempotency_key,status,body,updated_at)
+       VALUES($1,$2,$3,$4,$5,$6,now()) ON CONFLICT(idempotency_key) DO UPDATE SET
+       status=EXCLUDED.status,body=EXCLUDED.body,updated_at=now()`,
+      [
+        transfer.id,
+        transfer.userId,
+        transfer.proposalId,
+        transfer.idempotencyKey,
+        transfer.status,
+        JSON.stringify(transfer),
+      ],
+    );
+  }
+  async listBrokerageOrders(
+    proposalId: string,
+  ): Promise<BrokerageOrderRecord[]> {
+    const result = await this.pool.query<{ body: BrokerageOrderRecord }>(
+      "SELECT body FROM brokerage_orders WHERE proposal_id=$1 ORDER BY created_at",
+      [proposalId],
+    );
+    return result.rows.map((row) => row.body);
+  }
+  async saveBrokerageOrder(order: BrokerageOrderRecord): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO brokerage_orders(id,user_id,proposal_id,client_order_id,status,body,updated_at)
+       VALUES($1,$2,$3,$4,$5,$6,now()) ON CONFLICT(client_order_id) DO UPDATE SET
+       status=EXCLUDED.status,body=EXCLUDED.body,updated_at=now()`,
+      [
+        order.id,
+        order.userId,
+        order.proposalId,
+        order.clientOrderId,
+        order.status,
+        JSON.stringify(order),
+      ],
+    );
+  }
+  async getBrokerageSnapshot(
+    userId: string,
+  ): Promise<BrokerageSnapshot | undefined> {
+    const result = await this.pool.query<{ body: BrokerageSnapshot }>(
+      "SELECT body FROM brokerage_snapshots WHERE user_id=$1",
+      [userId],
+    );
+    return result.rows[0]?.body;
+  }
+  async saveBrokerageSnapshot(snapshot: BrokerageSnapshot): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO brokerage_snapshots(id,user_id,account_id,body,captured_at)
+       VALUES($1,$2,$3,$4,$5) ON CONFLICT(user_id) DO UPDATE SET
+       id=EXCLUDED.id,account_id=EXCLUDED.account_id,body=EXCLUDED.body,captured_at=EXCLUDED.captured_at`,
+      [
+        snapshot.id,
+        snapshot.userId,
+        snapshot.accountId,
+        JSON.stringify(snapshot),
+        snapshot.capturedAt,
+      ],
+    );
   }
   async appendAudit(event: AuditEvent): Promise<void> {
     await this.pool.query(

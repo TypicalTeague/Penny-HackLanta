@@ -1,5 +1,9 @@
 import type {
   AuditEvent,
+  BrokerageAccountRecord,
+  BrokerageOrderRecord,
+  BrokerageSnapshot,
+  BrokerageTransferRecord,
   ConversationMemory,
   Mandate,
   Proposal,
@@ -36,6 +40,18 @@ export interface PennyRepository {
   saveProposal(proposal: Proposal): Promise<void>;
   getSimulationByUser(userId: string): Promise<Simulation | undefined>;
   saveSimulation(simulation: Simulation): Promise<void>;
+  getBrokerageAccount(
+    userId: string,
+  ): Promise<BrokerageAccountRecord | undefined>;
+  saveBrokerageAccount(account: BrokerageAccountRecord): Promise<void>;
+  getBrokerageTransferByKey(
+    idempotencyKey: string,
+  ): Promise<BrokerageTransferRecord | undefined>;
+  saveBrokerageTransfer(transfer: BrokerageTransferRecord): Promise<void>;
+  listBrokerageOrders(proposalId: string): Promise<BrokerageOrderRecord[]>;
+  saveBrokerageOrder(order: BrokerageOrderRecord): Promise<void>;
+  getBrokerageSnapshot(userId: string): Promise<BrokerageSnapshot | undefined>;
+  saveBrokerageSnapshot(snapshot: BrokerageSnapshot): Promise<void>;
   appendAudit(event: AuditEvent): Promise<void>;
   listAudit(userId: string): Promise<AuditEvent[]>;
 }

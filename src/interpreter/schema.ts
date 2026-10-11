@@ -13,6 +13,7 @@ export const intentValues = [
   "increase_contribution",
   "continue_plan",
   "approve_plan",
+  "confirm_proposal",
   "reject_plan",
   "pause",
   "resume",
@@ -44,6 +45,11 @@ export const InterpretationSchema = z.object({
   confidence: z.number().min(0).max(1),
   missingInformation: z.array(z.string().max(80)).max(10),
   suggestedClarificationQuestion: z.string().max(240).nullable(),
+  confirmationCode: z
+    .string()
+    .regex(/^[A-Z0-9]{4,12}$/)
+    .nullable()
+    .default(null),
 });
 
 export type Interpretation = z.infer<typeof InterpretationSchema>;
@@ -78,6 +84,7 @@ export const interpretationJsonSchema = {
     confidence: { type: "number", minimum: 0, maximum: 1 },
     missingInformation: { type: "array", items: { type: "string" } },
     suggestedClarificationQuestion: { type: ["string", "null"] },
+    confirmationCode: { type: ["string", "null"], pattern: "^[A-Z0-9]{4,12}$" },
   },
   required: [
     "intent",
@@ -93,5 +100,6 @@ export const interpretationJsonSchema = {
     "confidence",
     "missingInformation",
     "suggestedClarificationQuestion",
+    "confirmationCode",
   ],
 } as const;

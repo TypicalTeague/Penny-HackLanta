@@ -16,6 +16,7 @@ const files = [
   "schema.sql",
   "migrations/002_persistent_memory.sql",
   "migrations/003_robo_portfolios.sql",
+  "migrations/004_brokerage_integration.sql",
 ];
 
 try {

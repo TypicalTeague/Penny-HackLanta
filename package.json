@@ -19,7 +19,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "npm run format:check && npm run typecheck && npm test && npm run build",
-    "smoke": "PENNY_TRANSPORT=terminal PENNY_INTERPRETER=local node dist/index.js --smoke"
+    "smoke": "PENNY_TRANSPORT=terminal PENNY_INTERPRETER=local node dist/index.js --smoke",
+    "alpaca:sandbox": "tsx src/scripts/alpaca-sandbox.ts",
+    "test:alpaca:sandbox": "vitest run tests/alpaca.sandbox.integration.test.ts"
   },
   "dependencies": {
     "@google/genai": "^1.27.0",

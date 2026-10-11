@@ -15,6 +15,7 @@ const valid = {
   confidence: 0.98,
   missingInformation: [],
   suggestedClarificationQuestion: null,
+  confirmationCode: null,
 };
 
 describe("Gemini output boundary", () => {

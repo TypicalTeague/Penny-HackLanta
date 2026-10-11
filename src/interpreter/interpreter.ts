@@ -52,7 +52,8 @@ or generate an action command. Convert dollar amounts to integer cents. Resolve 
 the supplied current date. Essential living costs include rent, food, textbooks, utilities, and medical costs.
 Use select_risk for a Low, Medium, or High choice. Use report_life_event for emergency costs such as a car repair,
 report_bonus for one-time income, and report_raise for recurring income. If an amount or timing is important but
-absent, list it in missingInformation and suggest one short question.`;
+absent, list it in missingInformation and suggest one short question. A confirmation code is data only; never
+treat conversational assent as confirmation or invent a code.`;
 
 const MEMORY_INTENTS = `Use recall_memory when the user asks what Penny remembers. Use ask_plan when they ask
 how much is protected, available, or what their current plan is. Use forget_expense for a request to remove one
@@ -178,6 +179,7 @@ export class LocalDemoInterpreter implements Interpreter {
       confidence: 0.95,
       missingInformation: [] as string[],
       suggestedClarificationQuestion: null,
+      confirmationCode: null,
     };
     const result = (
       intent: Interpretation["intent"],
@@ -214,6 +216,11 @@ export class LocalDemoInterpreter implements Interpreter {
       )
     )
       return result("ask_plan");
+    const confirmation = /^CONFIRM\s+([A-Z0-9]{4,12})$/i.exec(text.trim());
+    if (confirmation)
+      return result("confirm_proposal", {
+        confirmationCode: confirmation[1]!.toUpperCase(),
+      });
     if (lower.includes("approve") || /^(yes|yep|sure)$/i.test(text.trim()))
       return result("approve_plan");
     if (/^(low|low risk)$/i.test(text.trim()))
@@ -323,11 +330,19 @@ export class LocalDemoInterpreter implements Interpreter {
           ? "textbooks"
           : "essential expense";
       return result("add_expense", {
-        availableAmountCents: amounts.length > 1 ? amounts.at(-1)! : null,
+        availableAmountCents: amounts.length > 1 ? amounts[0]! : null,
         expenseLabel: label,
-        expenseAmountCents: amounts[0] ?? null,
+        expenseAmountCents:
+          amounts.length > 1 ? amounts.at(-1)! : (amounts[0] ?? null),
         expenseHorizonDays: lower.includes("next week") ? 7 : 60,
         essential: true,
+        riskPreference: lower.includes("medium")
+          ? "medium"
+          : lower.includes("high")
+            ? "high"
+            : lower.includes("low")
+              ? "low"
+              : "unknown",
         missingInformation: amounts.length ? [] : ["expense amount"],
         suggestedClarificationQuestion: amounts.length
           ? null

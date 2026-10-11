@@ -197,8 +197,11 @@ describe("transaction and persistence reliability", () => {
     });
     await service.handle(base("a", "I have $100"));
     await service.handle(base("b", "I need $60 for textbooks"));
-    await service.handle(base("c", "Medium risk"));
-    const approval = await service.handle(base("d", "approve"));
+    const risk = await service.handle(base("c", "Medium risk"));
+    const pending = await repository.getUserContext(risk.userId!);
+    const approval = await service.handle(
+      base("d", `CONFIRM ${pending!.pendingProposal!.confirmationCode}`),
+    );
 
     await expect(
       service.completeVerification(approval.userId!, approval.verification!, {
@@ -211,7 +214,7 @@ describe("transaction and persistence reliability", () => {
     expect(user?.verificationStatus).toBe("unverified");
     expect(
       (await repository.getProposal(user!.mandate.pendingProposalId!))?.status,
-    ).toBe("pending");
+    ).toBe("AWAITING_CONFIRMATION");
   });
 
   it("replaces a prior normalized portfolio before inserting a new id", async () => {

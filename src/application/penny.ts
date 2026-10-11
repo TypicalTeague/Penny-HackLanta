@@ -28,6 +28,16 @@ import type {
 import type { Interpreter } from "../interpreter/interpreter.js";
 import type { Interpretation } from "../interpreter/schema.js";
 import type { PennyRepository } from "../repository/repository.js";
+import {
+  BrokerageError,
+  UnavailableBrokerageAdapter,
+  type BrokerageService,
+} from "../brokerage/brokerage.js";
+import {
+  assertOrderCap,
+  confirmationCode,
+  createBrokerageAllocation,
+} from "../brokerage/models.js";
 
 export interface IncomingMessage {
   id: string;
@@ -57,6 +67,12 @@ export class PennyService {
     private readonly verification: VerificationProvider,
     private readonly consentVersion: string,
     private readonly now: () => Date = () => new Date(),
+    private readonly brokerage: BrokerageService = new UnavailableBrokerageAdapter(),
+    private readonly brokerageConfig: {
+      demoAccountId?: string;
+      achRelationshipId?: string;
+      accountApplication?: Record<string, unknown>;
+    } = {},
   ) {}
 
   async handle(input: IncomingMessage): Promise<PennyReply> {
@@ -132,7 +148,11 @@ export class PennyService {
     for (const user of users) {
       const portfolio = await this.repository.getSimulationByUser(user.id);
       if (!portfolio) continue;
+      const brokerageSnapshot = await this.repository.getBrokerageSnapshot(
+        user.id,
+      );
       const last =
+        brokerageSnapshot?.capturedAt ??
         portfolio.weeklySnapshots.at(-1)?.createdAt ??
         portfolio.transactions.at(0)?.createdAt;
       if (
@@ -221,6 +241,13 @@ export class PennyService {
         };
       case "approve_plan":
         return this.requestApproval(repository, mandate, messageId);
+      case "confirm_proposal":
+        return this.confirmProposal(
+          repository,
+          mandate,
+          parsed.confirmationCode,
+          messageId,
+        );
       case "recall_memory":
       case "ask_plan":
         return { text: planSummary(mandate) };
@@ -281,9 +308,7 @@ export class PennyService {
           text: "Just to be clear: Penny can’t receive deposits or hold money. Any amount here is only part of a simulated paper-investing exercise.",
         };
       case "ask_order_status":
-        return {
-          text: "No real order was placed—Penny cannot execute trades. I can only report the status of your simulated paper portfolio.",
-        };
+        return this.orderStatus(repository, mandate);
       case "pause":
       case "resume":
       case "reset": {
@@ -357,25 +382,34 @@ export class PennyService {
       },
       this.now(),
     );
-    const proposal: Proposal = {
-      id: `prp_${randomUUID()}`,
-      userId: mandate.userId,
-      mandateVersion: mandate.version + 1,
-      protectedCashCents: safety.protectedCashCents,
-      investableCashCents: safety.investableCashCents,
-      reasonCodes: safety.reasonCodes,
-      type: "activate",
-      riskPreference: mandate.riskPreference,
-      status: "pending",
-      idempotencyKey: `proposal:${messageId}`,
-      createdAt: this.now().toISOString(),
-    };
+    const selectedRisk =
+      parsed.riskPreference && parsed.riskPreference !== "unknown"
+        ? parsed.riskPreference
+        : mandate.riskPreference;
+    const proposal: Proposal = enrichBrokerageProposal(
+      {
+        id: `prp_${randomUUID()}`,
+        userId: mandate.userId,
+        mandateVersion: mandate.version + 1,
+        protectedCashCents: safety.protectedCashCents,
+        investableCashCents: safety.investableCashCents,
+        reasonCodes: safety.reasonCodes,
+        type: "activate",
+        riskPreference: selectedRisk,
+        status: "AWAITING_CONFIRMATION",
+        idempotencyKey: `proposal:${messageId}`,
+        createdAt: this.now().toISOString(),
+      },
+      selectedRisk === "unknown" ? "medium" : selectedRisk,
+      this.now(),
+    );
     const stored = await repository.createProposal(proposal);
     await repository.saveMandate({
       ...mandate,
       availableCashCents,
       expenses,
       protectedCashCents: safety.protectedCashCents,
+      riskPreference: selectedRisk,
       pendingProposalId: stored.id,
       version: mandate.version + 1,
     });
@@ -390,7 +424,7 @@ export class PennyService {
       return {
         text: `Based on what you told me, now may not be the right time to invest—and that is completely okay. All ${formatDollars(safety.protectedCashCents)} stays protected; the simulated amount is $0.00.`,
       };
-    if (mandate.riskPreference === "unknown") {
+    if (selectedRisk === "unknown") {
       const text = `${existing ? "I updated" : "I saved"} your ${expense.label} expense. We’ll keep ${formatDollars(safety.protectedCashCents)} separate and protected; ${formatDollars(safety.investableCashCents)} is available for a diversified simulated paper portfolio. Choose the risk level you’re comfortable with—I’ll handle the allocation and ongoing management.`;
       return {
         text,
@@ -407,7 +441,8 @@ export class PennyService {
     return this.proposedPlanReply(
       safety.investableCashCents,
       safety.protectedCashCents,
-      mandate.riskPreference,
+      selectedRisk,
+      stored,
     );
   }
 
@@ -456,26 +491,38 @@ export class PennyService {
       ? await repository.getProposal(mandate.pendingProposalId)
       : undefined;
     if (proposal) {
-      proposal = {
-        ...proposal,
-        mandateVersion: next.version,
-        riskPreference: risk,
-      };
+      proposal = enrichBrokerageProposal(
+        {
+          ...proposal,
+          mandateVersion: next.version,
+          riskPreference: risk,
+          confirmedAt: undefined,
+          status: "AWAITING_CONFIRMATION",
+        },
+        risk,
+        this.now(),
+      );
       await repository.saveProposal(proposal);
     } else {
-      proposal = await repository.createProposal({
-        id: `prp_${randomUUID()}`,
-        userId: mandate.userId,
-        mandateVersion: next.version,
-        protectedCashCents: safety.protectedCashCents,
-        investableCashCents: safety.investableCashCents,
-        reasonCodes: safety.reasonCodes,
-        type: "activate",
-        riskPreference: risk,
-        status: "pending",
-        idempotencyKey: `proposal:${messageId}`,
-        createdAt: this.now().toISOString(),
-      });
+      proposal = await repository.createProposal(
+        enrichBrokerageProposal(
+          {
+            id: `prp_${randomUUID()}`,
+            userId: mandate.userId,
+            mandateVersion: next.version,
+            protectedCashCents: safety.protectedCashCents,
+            investableCashCents: safety.investableCashCents,
+            reasonCodes: safety.reasonCodes,
+            type: "activate",
+            riskPreference: risk,
+            status: "AWAITING_CONFIRMATION",
+            idempotencyKey: `proposal:${messageId}`,
+            createdAt: this.now().toISOString(),
+          },
+          risk,
+          this.now(),
+        ),
+      );
       await repository.saveMandate({ ...next, pendingProposalId: proposal.id });
     }
     await this.auditWith(
@@ -489,6 +536,7 @@ export class PennyService {
       safety.investableCashCents,
       safety.protectedCashCents,
       risk,
+      proposal,
     );
   }
 
@@ -496,6 +544,7 @@ export class PennyService {
     investableCashCents: number,
     protectedCashCents: number,
     risk: "low" | "medium" | "high",
+    proposal: Proposal,
   ): PennyReply {
     const portfolio = createPortfolio(
       "preview",
@@ -505,7 +554,16 @@ export class PennyService {
       2_950,
       this.now(),
     );
-    const text = `Here’s your ${titleCase(risk)}-risk plan: ${formatDollars(protectedCashCents)} protected and ${formatDollars(investableCashCents)} in a diversified simulated portfolio. Review the card, then approve, adjust, or wait.`;
+    const allocation = proposal.allocation ?? [];
+    const stocks =
+      allocation.find((item) => item.assetClass === "equities")?.amountCents ??
+      0;
+    const bonds =
+      allocation.find((item) => item.assetClass === "bonds")?.amountCents ?? 0;
+    const cash =
+      allocation.find((item) => item.assetClass === "cash_equivalent")
+        ?.amountCents ?? 0;
+    const text = `Your ${formatDollars(protectedCashCents)} stays protected 💚 I can place the remaining ${formatDollars(investableCashCents)} into your ${titleCase(risk)} plan: ${formatDollars(stocks)} diversified stocks, ${formatDollars(bonds)} bonds, and ${formatDollars(cash)} cash. This is a simulated Alpaca sandbox portfolio for the demo. Reply CONFIRM ${proposal.confirmationCode} to continue; the code expires in 10 minutes.`;
     return {
       text,
       parts: [
@@ -513,8 +571,8 @@ export class PennyService {
         portfolioCardPart(portfolio, protectedCashCents, false),
         {
           type: "poll",
-          title: "Ready to activate this paper mandate?",
-          options: ["Approve plan", "Adjust it", "Not yet"],
+          title: "Review this simulated mandate",
+          options: ["Show confirmation code", "Adjust it", "Not yet"],
         },
       ],
     };
@@ -543,15 +601,84 @@ export class PennyService {
         };
       return { text: "There isn’t a simulated plan waiting for approval yet." };
     }
+    const proposal = await repository.getProposal(mandate.pendingProposalId);
+    if (!proposal?.confirmationCode)
+      return {
+        text: "That proposal is incomplete. Please ask Penny to create a new plan.",
+      };
+    return {
+      text: `Explicit confirmation is required. Reply CONFIRM ${proposal.confirmationCode} before ${new Date(proposal.expiresAt!).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}. A poll tap or ordinary “yes” cannot place sandbox orders.`,
+    };
+  }
+
+  private async confirmProposal(
+    repository: PennyRepository,
+    mandate: Mandate,
+    code: string | null,
+    messageId: string,
+  ): Promise<PennyReply> {
+    if (!mandate.pendingProposalId)
+      return { text: "There is no proposal awaiting confirmation." };
+    const proposal = await repository.getProposal(mandate.pendingProposalId);
+    if (!proposal) return { text: "That proposal is no longer available." };
+    if (
+      proposal.status === "EXECUTED" ||
+      proposal.status === "PARTIALLY_FILLED"
+    )
+      return {
+        text: "That simulated proposal was already executed; no duplicate orders were created.",
+      };
+    if (
+      !code ||
+      code !== proposal.confirmationCode ||
+      !proposal.expiresAt ||
+      new Date(proposal.expiresAt).getTime() <= this.now().getTime() ||
+      proposal.mandateVersion !== mandate.version
+    ) {
+      await this.auditWith(
+        repository,
+        mandate.userId,
+        "confirmation_rejected",
+        {
+          proposalId: proposal.id,
+          reason:
+            proposal.mandateVersion !== mandate.version
+              ? "MODIFIED"
+              : "INVALID_OR_EXPIRED",
+        },
+        messageId,
+      );
+      return {
+        text: "That confirmation is invalid, expired, or belongs to a modified plan. I made no transfer or order; please request a fresh proposal.",
+      };
+    }
+    const confirmed = {
+      ...proposal,
+      confirmedAt: this.now().toISOString(),
+    };
+    await repository.saveProposal(confirmed);
+    await this.auditWith(
+      repository,
+      mandate.userId,
+      "proposal_confirmed",
+      {
+        proposalId: proposal.id,
+        approvedAmountCents: proposal.investableCashCents,
+      },
+      messageId,
+    );
     const challenge = await this.verification.start(
       "approve_plan",
-      mandate.pendingProposalId,
+      proposal.id,
     );
     await this.auditWith(
       repository,
       mandate.userId,
       "verification_started",
-      { action: challenge.action, resourceId: challenge.resourceId },
+      {
+        action: challenge.action,
+        resourceId: proposal.id,
+      },
       messageId,
     );
     return { text: verificationCopy(challenge), verification: challenge };
@@ -608,25 +735,33 @@ export class PennyService {
       },
       this.now(),
     );
-    const proposal = await repository.createProposal({
-      id: `prp_${randomUUID()}`,
-      userId: mandate.userId,
-      mandateVersion: mandate.version + 1,
-      protectedCashCents: safety.protectedCashCents,
-      investableCashCents: safety.investableCashCents,
-      requestedAmountCents: expense.amountCents,
-      reasonCodes: [
-        ...new Set([
-          ...safety.reasonCodes,
-          "EMERGENCY_EXPENSE_REPORTED",
-          "WITHDRAWAL_MAY_BE_NEEDED",
-        ]),
-      ] as Proposal["reasonCodes"],
-      type: "pause",
-      status: "pending",
-      idempotencyKey: `life-event:${messageId}`,
-      createdAt: this.now().toISOString(),
-    });
+    const proposal = await repository.createProposal(
+      enrichBrokerageProposal(
+        {
+          id: `prp_${randomUUID()}`,
+          userId: mandate.userId,
+          mandateVersion: mandate.version + 1,
+          protectedCashCents: safety.protectedCashCents,
+          investableCashCents: safety.investableCashCents,
+          requestedAmountCents: expense.amountCents,
+          reasonCodes: [
+            ...new Set([
+              ...safety.reasonCodes,
+              "EMERGENCY_EXPENSE_REPORTED",
+              "WITHDRAWAL_MAY_BE_NEEDED",
+            ]),
+          ] as Proposal["reasonCodes"],
+          type: "pause",
+          status: "AWAITING_CONFIRMATION",
+          idempotencyKey: `life-event:${messageId}`,
+          createdAt: this.now().toISOString(),
+        },
+        mandate.riskPreference === "unknown"
+          ? "medium"
+          : mandate.riskPreference,
+        this.now(),
+      ),
+    );
     await repository.saveMandate({
       ...mandate,
       expenses,
@@ -823,7 +958,11 @@ export class PennyService {
         action: challenge.action,
         subjectDigest: digest(identity.subject),
       });
-      if (proposal.status === "approved") {
+      if (
+        proposal.status === "approved" ||
+        proposal.status === "EXECUTED" ||
+        proposal.status === "PARTIALLY_FILLED"
+      ) {
         const existing = await repository.getSimulationByUser(userId);
         if (!existing)
           await repository.saveSimulation(
@@ -833,7 +972,10 @@ export class PennyService {
       }
       if (
         mandate.pendingProposalId !== proposal.id ||
-        proposal.mandateVersion !== mandate.version
+        proposal.mandateVersion !== mandate.version ||
+        !proposal.confirmedAt ||
+        !proposal.expiresAt ||
+        new Date(proposal.expiresAt).getTime() <= this.now().getTime()
       )
         throw new Error("Proposal is stale");
       const simulation = startSimulation(
@@ -847,7 +989,49 @@ export class PennyService {
             ? "medium"
             : mandate.riskPreference,
       );
-      await repository.saveProposal({ ...proposal, status: "approved" });
+      if (this.brokerage.provider === "unavailable") {
+        await repository.saveProposal({ ...proposal, status: "approved" });
+        await repository.saveSimulation(simulation);
+        const { pendingProposalId: _pending, ...withoutPending } = mandate;
+        await repository.saveMandate({
+          ...withoutPending,
+          approvedProposalId: proposal.id,
+          verifiedSubject: identity.subject,
+          verifiedAt: identity.verifiedAt,
+          version: mandate.version + 1,
+        });
+        await this.auditWith(repository, userId, "simulation_started", {
+          proposalId: proposal.id,
+          simulatedInitialCents: simulation.initialCents,
+          protectedCashCents: proposal.protectedCashCents,
+          provider: "explicit_local_simulation",
+        });
+        return `Verified ✅ Your ${formatDollars(simulation.initialCents)} simulated paper portfolio is active in explicitly local mode. ${formatDollars(proposal.protectedCashCents)} remains protected. No brokerage provider was configured and no order was sent. No real money moved.`;
+      }
+      await repository.saveProposal({ ...proposal, status: "VERIFIED" });
+      await repository.saveProposal({ ...proposal, status: "SUBMITTING" });
+      let execution: { status: "EXECUTED" | "PARTIALLY_FILLED"; text: string };
+      try {
+        execution = await this.executeBrokerageProposal(
+          repository,
+          userId,
+          proposal,
+        );
+      } catch (error) {
+        const code =
+          error instanceof BrokerageError
+            ? error.code
+            : error instanceof Error
+              ? error.message
+              : "BROKERAGE_FAILURE";
+        await repository.saveProposal({ ...proposal, status: "REJECTED" });
+        await this.auditWith(repository, userId, "brokerage_rejected", {
+          proposalId: proposal.id,
+          errorCode: code,
+        });
+        return `Verified, but Alpaca sandbox is unavailable or rejected the request (${code}). I placed no additional orders. Your protected ${formatDollars(proposal.protectedCashCents)} remains untouched.`;
+      }
+      await repository.saveProposal({ ...proposal, status: execution.status });
       await repository.saveSimulation(simulation);
       const { pendingProposalId: _pending, ...withoutPending } = mandate;
       await repository.saveMandate({
@@ -857,12 +1041,19 @@ export class PennyService {
         verifiedAt: identity.verifiedAt,
         version: mandate.version + 1,
       });
-      await this.auditWith(repository, userId, "simulation_started", {
-        proposalId: proposal.id,
-        simulatedInitialCents: simulation.initialCents,
-        protectedCashCents: proposal.protectedCashCents,
-      });
-      return `Verified ✅ Your ${formatDollars(simulation.initialCents)} simulated paper portfolio is active. ${formatDollars(proposal.protectedCashCents)} remains a separate protected reserve. No real money moved.`;
+      await this.auditWith(
+        repository,
+        userId,
+        "brokerage_execution_completed",
+        {
+          proposalId: proposal.id,
+          simulatedInitialCents: simulation.initialCents,
+          protectedCashCents: proposal.protectedCashCents,
+          provider: this.brokerage.provider,
+          status: execution.status,
+        },
+      );
+      return execution.text;
     }
     if (challenge.action === "change_mandate") {
       const [kind, boundUser, amountText, encodedLabel] =
@@ -1054,6 +1245,168 @@ export class PennyService {
     return `Verified. Future simulated contributions are ${paused ? "paused" : "resumed"}. No real money moved.`;
   }
 
+  private async executeBrokerageProposal(
+    repository: PennyRepository,
+    userId: string,
+    proposal: Proposal,
+  ): Promise<{ status: "EXECUTED" | "PARTIALLY_FILLED"; text: string }> {
+    const now = this.now().toISOString();
+    let storedAccount = await repository.getBrokerageAccount(userId);
+    const account = await this.brokerage.createOrRetrieveAccount({
+      accountId: storedAccount?.accountId ?? this.brokerageConfig.demoAccountId,
+      application: this.brokerageConfig.accountApplication,
+    });
+    storedAccount = {
+      userId,
+      provider: account.provider,
+      accountId: account.accountId,
+      ...(account.accountNumber
+        ? { accountNumber: account.accountNumber }
+        : {}),
+      status: account.status,
+      buyingPowerCents: account.buyingPowerCents,
+      updatedAt: now,
+    };
+    await repository.saveBrokerageAccount(storedAccount);
+    await this.auditWith(repository, userId, "brokerage_account_ready", {
+      provider: account.provider,
+      accountRef: digest(account.accountId),
+      status: account.status,
+    });
+
+    let accountSnapshot = await this.brokerage.getAccountSnapshot(
+      account.accountId,
+    );
+    const requiredFunding = Math.max(
+      0,
+      proposal.investableCashCents - accountSnapshot.buyingPowerCents,
+    );
+    const transferKey = `fund:${proposal.id}`;
+    if (requiredFunding > 0) {
+      const existing = await repository.getBrokerageTransferByKey(transferKey);
+      if (!existing) {
+        const transfer = await this.brokerage.fundSandbox({
+          accountId: account.accountId,
+          amountCents: requiredFunding,
+          relationshipId: this.brokerageConfig.achRelationshipId ?? "",
+          idempotencyKey: transferKey,
+        });
+        await repository.saveBrokerageTransfer({
+          id: `btr_${randomUUID()}`,
+          userId,
+          proposalId: proposal.id,
+          providerTransferId: transfer.id,
+          direction: transfer.direction,
+          amountCents: transfer.amountCents,
+          status: transfer.status,
+          idempotencyKey: transferKey,
+          createdAt: now,
+          updatedAt: now,
+        });
+        await this.auditWith(repository, userId, "sandbox_transfer_requested", {
+          proposalId: proposal.id,
+          transferRef: digest(transfer.id),
+          amountCents: transfer.amountCents,
+          status: transfer.status,
+        });
+      }
+      accountSnapshot = await this.brokerage.getAccountSnapshot(
+        account.accountId,
+      );
+    }
+
+    const expectedOrders = proposal.expectedOrders ?? [];
+    assertOrderCap(
+      expectedOrders,
+      proposal.investableCashCents,
+      proposal.investableCashCents,
+      accountSnapshot.buyingPowerCents,
+    );
+    const existingOrders = await repository.listBrokerageOrders(proposal.id);
+    const records = [...existingOrders];
+    for (const [index, expected] of expectedOrders.entries()) {
+      const clientOrderId = `${proposal.id.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 36)}-${index}`;
+      if (records.some((item) => item.clientOrderId === clientOrderId))
+        continue;
+      const order = await this.brokerage.submitOrder({
+        accountId: account.accountId,
+        symbol: expected.symbol,
+        notionalCents: expected.notionalCents,
+        side: expected.side,
+        clientOrderId,
+      });
+      const record = {
+        id: `bor_${randomUUID()}`,
+        userId,
+        proposalId: proposal.id,
+        providerOrderId: order.id,
+        clientOrderId: order.clientOrderId,
+        symbol: order.symbol,
+        side: order.side,
+        notionalCents: expected.notionalCents,
+        status: order.status,
+        createdAt: now,
+        updatedAt: now,
+      } as const;
+      await repository.saveBrokerageOrder(record);
+      records.push(record);
+      await this.auditWith(repository, userId, "brokerage_order_submitted", {
+        proposalId: proposal.id,
+        orderRef: digest(order.id),
+        symbol: order.symbol,
+        notionalCents: expected.notionalCents,
+        status: order.status,
+      });
+    }
+    const finalAccount = await this.brokerage.getAccountSnapshot(
+      account.accountId,
+    );
+    const positions = await this.brokerage.getPositions(account.accountId);
+    await repository.saveBrokerageSnapshot({
+      id: `bsn_${randomUUID()}`,
+      userId,
+      accountId: account.accountId,
+      portfolioValueCents: finalAccount.portfolioValueCents,
+      cashCents: finalAccount.cashCents,
+      buyingPowerCents: finalAccount.buyingPowerCents,
+      positions,
+      simulated: true,
+      capturedAt: now,
+    });
+    const complete = records.every((order) =>
+      ["filled", "accepted", "new", "partially_filled"].includes(
+        order.status.toLowerCase(),
+      ),
+    );
+    const status = complete ? "EXECUTED" : "PARTIALLY_FILLED";
+    const orderSummary = records
+      .map((order) => `${order.symbol} ${formatDollars(order.notionalCents)}`)
+      .join(" and ");
+    return {
+      status,
+      text: `Verified ✅ Alpaca sandbox received the simulated ${orderSummary} orders. ${formatDollars(proposal.protectedCashCents)} remains protected and ${formatDollars((proposal.allocation ?? []).find((item) => item.assetClass === "cash_equivalent")?.amountCents ?? 0)} remains sandbox cash. No real money moved.`,
+    };
+  }
+
+  private async orderStatus(
+    repository: PennyRepository,
+    mandate: Mandate,
+  ): Promise<PennyReply> {
+    const proposalId = mandate.approvedProposalId ?? mandate.pendingProposalId;
+    if (!proposalId)
+      return {
+        text: "There are no Alpaca sandbox orders for your Penny profile.",
+      };
+    const orders = await repository.listBrokerageOrders(proposalId);
+    if (orders.length === 0)
+      return {
+        text: "No Alpaca sandbox orders have been submitted for that proposal yet.",
+      };
+    return {
+      text: `Simulated Alpaca order status: ${orders.map((order) => `${order.symbol} ${formatDollars(order.notionalCents)} — ${order.status}`).join("; ")}.`,
+    };
+  }
+
   private async recordSuccessfulVerification(
     repository: PennyRepository,
     userId: string,
@@ -1083,6 +1436,52 @@ export class PennyService {
     userId: string,
   ): Promise<PennyReply> {
     const user = await repository.getUser(userId);
+    const brokerageAccount = await repository.getBrokerageAccount(userId);
+    if (user && brokerageAccount) {
+      try {
+        const account = await this.brokerage.getAccountSnapshot(
+          brokerageAccount.accountId,
+        );
+        const positions = await this.brokerage.getPositions(
+          brokerageAccount.accountId,
+        );
+        const previous = await repository.getBrokerageSnapshot(userId);
+        const snapshot = {
+          id: `bsn_${randomUUID()}`,
+          userId,
+          accountId: brokerageAccount.accountId,
+          portfolioValueCents: account.portfolioValueCents,
+          cashCents: account.cashCents,
+          buyingPowerCents: account.buyingPowerCents,
+          positions,
+          simulated: true as const,
+          capturedAt: this.now().toISOString(),
+        };
+        await repository.saveBrokerageSnapshot(snapshot);
+        const change = previous
+          ? snapshot.portfolioValueCents - previous.portfolioValueCents
+          : 0;
+        await this.auditWith(repository, userId, "brokerage_weekly_snapshot", {
+          snapshotId: snapshot.id,
+          portfolioValueCents: snapshot.portfolioValueCents,
+          positionCount: positions.length,
+        });
+        return {
+          text: `Good morning! Your simulated Alpaca sandbox portfolio is ${formatDollars(snapshot.portfolioValueCents)} (${change >= 0 ? "+" : "-"}${formatDollars(Math.abs(change))} since the last snapshot). ${formatDollars(user.mandate.protectedCashCents)} remains protected outside the orders. Holdings: ${positions.map((position) => `${position.symbol} ${formatDollars(position.marketValueCents)}`).join(", ") || "sandbox cash only"}.`,
+        };
+      } catch (error) {
+        const code =
+          error instanceof BrokerageError
+            ? error.code
+            : "BROKERAGE_UNAVAILABLE";
+        await this.auditWith(repository, userId, "brokerage_weekly_failed", {
+          errorCode: code,
+        });
+        return {
+          text: `I couldn’t retrieve your simulated Alpaca sandbox update (${code}). I did not place or change any orders.`,
+        };
+      }
+    }
     const simulation = await repository.getSimulationByUser(userId);
     if (!user || !simulation) throw new Error("No active simulation");
     const updated = advancePortfolioWeek(
@@ -1240,7 +1639,12 @@ function deterministicMemoryIntent(text: string): Interpretation | undefined {
   const lower = text.toLowerCase();
   let intent: Interpretation["intent"] | undefined;
   let expenseLabel: string | null = null;
-  if (/\bforget (me|everything|all my data)\b/i.test(text))
+  let confirmation: string | null = null;
+  const confirmationMatch = /^CONFIRM\s+([A-Z0-9]{4,12})$/i.exec(text.trim());
+  if (confirmationMatch) {
+    intent = "confirm_proposal";
+    confirmation = confirmationMatch[1]!.toUpperCase();
+  } else if (/\bforget (me|everything|all my data)\b/i.test(text))
     intent = "forget_me";
   else if (
     /\b(forget|remove|delete)\b/i.test(text) &&
@@ -1275,6 +1679,30 @@ function deterministicMemoryIntent(text: string): Interpretation | undefined {
     confidence: 1,
     missingInformation: [],
     suggestedClarificationQuestion: null,
+    confirmationCode: confirmation,
+  };
+}
+
+function enrichBrokerageProposal(
+  proposal: Proposal,
+  risk: "low" | "medium" | "high",
+  now: Date,
+): Proposal {
+  const { allocation, orders } = createBrokerageAllocation(
+    proposal.investableCashCents,
+    risk,
+  );
+  return {
+    ...proposal,
+    riskPreference: risk,
+    confirmationCode: confirmationCode(
+      `${proposal.id}:${proposal.mandateVersion}:${proposal.protectedCashCents}:${proposal.investableCashCents}:${risk}`,
+    ),
+    expiresAt: new Date(now.getTime() + 10 * 60_000).toISOString(),
+    allocation,
+    expectedOrders: orders,
+    explanation:
+      "Essential money remains protected; only the confirmed remainder may enter the simulated sandbox portfolio.",
   };
 }
 

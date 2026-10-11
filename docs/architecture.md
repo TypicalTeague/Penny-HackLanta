@@ -9,6 +9,8 @@ sequenceDiagram
   participant G as Gemini
   participant R as Deterministic rules
   participant H as Auth0
+  participant B as BrokerageService
+  participant L as Alpaca sandbox
 
   U->>P: text or poll selection
   P->>A: stable sender + space + message id
@@ -23,7 +25,11 @@ sequenceDiagram
   P-->>U: native iMessage experience
   U->>H: hosted verification for consequential change
   H-->>A: verified subject and token claims
-  A->>DB: apply bound proposal exactly once
+  A->>A: revalidate code, expiry, version, capacity, buying power
+  A->>B: idempotent account/funding/notional orders
+  B->>L: sandbox-only HTTPS requests
+  L-->>B: account/transfer/order/position status
+  A->>DB: persist bound result exactly once
 ```
 
 ## Trust boundaries
@@ -33,11 +39,13 @@ sequenceDiagram
 - Zod validation occurs before a repository transaction can write financial state.
 - The capacity and portfolio engines are pure deterministic TypeScript.
 - Auth0 challenges bind action, user/resource, mandate version, and expiry; subject changes fail closed.
+- Exact `CONFIRM <code>` is parsed deterministically and bound to an unexpired proposal; ordinary assent and poll taps are not approval.
+- `BrokerageService` caps notional orders and the Alpaca adapter rejects every non-sandbox origin.
 - Raw messages, tokens, credentials, Auth0 subjects, and financial payloads are excluded from logs.
 
 ## State and idempotency
 
-PostgreSQL stores normalized users, mandates, expenses, income changes, goals, proposals, portfolios, positions, transactions, rebalance events, weekly snapshots, conversation memory, audit events, and message receipts. The legacy JSON documents remain mirrored for backward-compatible reads. Every table carrying user data is keyed or foreign-keyed to one Penny user.
+PostgreSQL stores normalized users, mandates, expenses, income changes, goals, proposals, confirmation state, brokerage accounts/transfers/orders/snapshots, local presentation portfolios, conversation memory, audit events, and message receipts. The legacy JSON documents remain mirrored for backward-compatible reads. Every table carrying user data is keyed or foreign-keyed to one Penny user.
 
 Inbound provider message IDs are claimed before interpretation. Failed transactions release the claim for retry; completed ones cannot repeat an effect. Proposals use message-derived idempotency keys. Transaction and weekly snapshot IDs are stable for their logical operation. The weekly scheduler calculates due work from persisted timestamps, so process restarts do not reset the schedule.
 

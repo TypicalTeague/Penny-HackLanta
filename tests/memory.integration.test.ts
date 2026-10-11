@@ -103,8 +103,11 @@ describe("durable user memory acceptance", () => {
     const first = service(repository);
     await first.handle(message("p1", "I have $100"));
     await first.handle(message("p2", "I need $60 for textbooks"));
-    await first.handle(message("p3", "Medium risk"));
-    const approval = await first.handle(message("p4", "approve"));
+    const risk = await first.handle(message("p3", "Medium risk"));
+    const pending = await repository.getUserContext(risk.userId!);
+    const approval = await first.handle(
+      message("p4", `CONFIRM ${pending!.pendingProposal!.confirmationCode}`),
+    );
     await first.completeVerification(approval.userId!, approval.verification!, {
       subject: "auth0|owner",
       verifiedAt: now().toISOString(),
