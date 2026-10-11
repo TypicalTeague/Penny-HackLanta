@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MODEL_PORTFOLIOS,
   advancePortfolioWeek,
+  contributeToPortfolio,
   createPortfolio,
   maxAllocationDriftBps,
   rebalancePortfolio,
@@ -56,5 +57,17 @@ describe("deterministic portfolio management", () => {
       advancePortfolioWeek(b, 6_000),
     );
     expect(advancePortfolioWeek(a, 6_000).currentCents).toBe(4_118);
+  });
+
+  it("diversifies an approved simulated contribution", () => {
+    const portfolio = createPortfolio("u", "p", 4_000, "medium");
+    const updated = contributeToPortfolio(portfolio, 1_000);
+    expect(updated.currentCents).toBe(5_000);
+    expect(updated.positions.map((position) => position.valueCents)).toEqual([
+      3_000, 1_500, 500,
+    ]);
+    expect(
+      updated.transactions.filter((item) => item.type === "contribution"),
+    ).toHaveLength(3);
   });
 });
