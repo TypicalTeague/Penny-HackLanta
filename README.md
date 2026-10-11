@@ -89,8 +89,8 @@ Create an Auth0 Native Application with Device Code enabled and an API audience.
 ## Replit deployment
 
 1. Import the GitHub repository and add secrets.
-2. Provision PostgreSQL and apply all three schema/migration files in order.
-3. Build with `npm ci && npm run build`; run with `npm start`.
+2. Provision PostgreSQL. `npm run start:production` applies the idempotent schema and migrations before startup.
+3. Build with `npm ci && npm run build`; run with `npm run start:production`.
 4. Use one always-on Reserved VM worker for the Spectrum stream and scheduler.
 5. Set `PORT` only if Replit monitoring needs `/healthz`; it exposes status, not a product UI.
 6. The scheduler checks hourly by default and sends only when the persisted last snapshot is at least seven days old. `PENNY_UPDATE_DELAY_MS` can shorten the post-approval demo update.

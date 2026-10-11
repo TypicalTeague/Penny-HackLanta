@@ -1,5 +1,5 @@
-run = "npm start"
+run = "npm run start:production"
 
 [deployment]
 build = "npm ci && npm run build"
-run = "npm start"
+run = "npm run start:production"

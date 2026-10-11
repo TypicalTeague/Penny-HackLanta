@@ -18,7 +18,6 @@ export async function runTerminal(service: PennyService): Promise<void> {
       text,
     });
     if (reply.text) console.log(`penny> ${reply.text}`);
-    await service.acknowledgeMessage(`terminal-${sequence}`);
   }
   prompt.close();
 }

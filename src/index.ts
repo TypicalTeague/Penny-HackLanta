@@ -5,7 +5,7 @@ import {
 } from "./auth/auth0.js";
 import { createServer } from "node:http";
 import { PennyService } from "./application/penny.js";
-import { loadConfig, requireValue } from "./config.js";
+import { loadConfig, requireValue, validateRuntimeConfig } from "./config.js";
 import {
   GeminiInterpreter,
   LocalDemoInterpreter,
@@ -17,6 +17,7 @@ import { runTerminal } from "./transport/terminal.js";
 
 async function main(): Promise<void> {
   const config = loadConfig(process.env);
+  validateRuntimeConfig(config);
   const repository = config.DATABASE_URL
     ? PostgresRepository.connect(config.DATABASE_URL)
     : new InMemoryRepository();
@@ -24,7 +25,14 @@ async function main(): Promise<void> {
     config.PENNY_INTERPRETER === "gemini"
       ? new GeminiInterpreter(
           requireValue(config.GEMINI_API_KEY, "GEMINI_API_KEY"),
-          config.GEMINI_MODEL,
+          {
+            model: config.GEMINI_MODEL,
+            fallbackModels: config.GEMINI_FALLBACK_MODELS.split(",")
+              .map((value) => value.trim())
+              .filter(Boolean),
+            timeoutMs: config.GEMINI_TIMEOUT_MS,
+            maxAttempts: config.GEMINI_MAX_ATTEMPTS,
+          },
         )
       : new LocalDemoInterpreter();
   const verification: VerificationProvider =

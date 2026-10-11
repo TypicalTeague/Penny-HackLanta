@@ -12,6 +12,7 @@ export interface PennyRepository {
   transaction<T>(
     operation: (repository: PennyRepository) => Promise<T>,
   ): Promise<T>;
+  lockUser(userId: string): Promise<void>;
   claimMessage(messageId: string): Promise<boolean>;
   attachMessageToUser(messageId: string, userId: string): Promise<void>;
   recordMessageIntent(messageId: string, intent: string): Promise<void>;

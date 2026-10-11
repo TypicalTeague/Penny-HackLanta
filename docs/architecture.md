@@ -63,4 +63,4 @@ Inbound provider message IDs are claimed before interpretation. Failed transacti
 
 ## Failure behavior
 
-Gemini failure or malformed output changes no financial state. PostgreSQL failures roll back atomically. Auth0 expiry/mismatch changes nothing. Card-send failure does not invalidate the stored snapshot; the same facts remain available as text. Seeded data removes live-market dependency. The terminal transport and `/healthz` are diagnostics only, never alternate judged interfaces.
+Gemini failure or malformed output changes no financial state. Message-domain mutations and receipt completion commit atomically, and verified actions run in one database transaction. Auth0 expiry/mismatch changes nothing. If delivery fails after a commit, Penny says that the request was saved and directs the user to recall the plan instead of replaying the mutation. Seeded data removes live-market dependency. The terminal transport and `/healthz` are diagnostics only, never alternate judged interfaces.

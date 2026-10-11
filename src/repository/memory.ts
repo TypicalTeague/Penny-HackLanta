@@ -34,6 +34,11 @@ export class InMemoryRepository implements PennyRepository {
     }
   }
 
+  async lockUser(_userId: string): Promise<void> {
+    // JavaScript execution is single-process in diagnostic mode. PostgreSQL
+    // supplies the cross-worker lock used by production.
+  }
+
   async claimMessage(messageId: string): Promise<boolean> {
     if (this.receipts.has(messageId)) return false;
     this.receipts.set(messageId, "processing");

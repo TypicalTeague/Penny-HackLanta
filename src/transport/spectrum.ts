@@ -52,6 +52,7 @@ export async function runSpectrum(
     if (!text) continue;
     const startedAt = Date.now();
     const messageRef = reference(message.id);
+    let stage: "processing" | "delivery" = "processing";
     console.log(JSON.stringify({ event: "message_received", messageRef }));
     try {
       await space.responding(async () => {
@@ -69,8 +70,8 @@ export async function runSpectrum(
           legacySenderKey: rawSenderId,
           text,
         });
+        stage = "delivery";
         await sendReply(space, message, reply);
-        await service.acknowledgeMessage(message.id);
         console.log(
           JSON.stringify({
             event: "message_completed",
@@ -94,12 +95,15 @@ export async function runSpectrum(
           event: "message_failed",
           messageRef,
           durationMs: Date.now() - startedAt,
-          errorRef: reference(String(error)),
+          stage,
+          ...safeErrorDetails(error),
         }),
       );
       try {
         await message.reply(
-          "I hit a temporary delay and made no changes. Please try that message once more.",
+          stage === "processing"
+            ? "I couldn’t safely process that request, so I made no financial changes. Please try once more."
+            : "I saved your request, but part of my reply could not be delivered. Please ask “What’s my plan?” before repeating the request.",
         );
       } catch {
         console.error(
@@ -108,6 +112,21 @@ export async function runSpectrum(
       }
     }
   }
+}
+
+function safeErrorDetails(error: unknown): Record<string, unknown> {
+  const candidate = error as {
+    name?: string;
+    code?: string;
+    status?: number;
+    message?: string;
+  };
+  return {
+    errorRef: reference(String(error)),
+    errorType: candidate?.name ?? typeof error,
+    ...(candidate?.code ? { errorCode: candidate.code } : {}),
+    ...(candidate?.status ? { providerStatus: candidate.status } : {}),
+  };
 }
 
 async function sendDueWeeklyUpdates(
@@ -138,18 +157,23 @@ function reference(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 8);
 }
 
-async function finishVerification(
+export async function finishVerification(
   service: PennyService,
   provider: VerificationProvider,
   userId: string,
   challenge: PendingVerification,
   space: { send(content: string): Promise<unknown> },
 ): Promise<void> {
+  let stateCommitted = false;
   try {
     const identity = await provider.waitForVerification(challenge);
-    await space.send(
-      await service.completeVerification(userId, challenge, identity),
+    const confirmation = await service.completeVerification(
+      userId,
+      challenge,
+      identity,
     );
+    stateCommitted = true;
+    await space.send(confirmation);
     if (challenge.action === "approve_plan") {
       const delayMs = Number(process.env.PENNY_UPDATE_DELAY_MS ?? "30000");
       setTimeout(
@@ -171,14 +195,27 @@ async function finishVerification(
       );
     }
   } catch (error) {
-    const ref = createHash("sha256")
-      .update(String(error))
-      .digest("hex")
-      .slice(0, 8);
-    console.error(JSON.stringify({ event: "verification_failed", ref }));
-    await space.send(
-      "Verification didn’t complete, so I made no changes. You can try again when you’re ready.",
+    console.error(
+      JSON.stringify({
+        event: stateCommitted
+          ? "verification_confirmation_delivery_failed"
+          : "verification_failed",
+        ...safeErrorDetails(error),
+      }),
     );
+    if (!stateCommitted)
+      await space
+        .send(
+          "Verification didn’t complete, so I made no changes. You can try again when you’re ready.",
+        )
+        .catch((deliveryError: unknown) =>
+          console.error(
+            JSON.stringify({
+              event: "verification_error_reply_failed",
+              ...safeErrorDetails(deliveryError),
+            }),
+          ),
+        );
   }
 }
 

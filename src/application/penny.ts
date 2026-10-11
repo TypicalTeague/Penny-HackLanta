@@ -81,6 +81,7 @@ export class PennyService {
         ));
       await this.repository.recordMessageIntent(input.id, parsed.intent);
       const reply = await this.repository.transaction(async (repository) => {
+        await repository.lockUser(user.id);
         const context = await repository.getUserContext(user.id);
         if (!context) throw new Error("Penny user context unavailable");
         await this.auditWith(
@@ -107,6 +108,9 @@ export class PennyService {
               buildMemory(refreshed, parsed),
             );
         }
+        // The receipt and domain mutations commit together. Once handle returns,
+        // a delivery retry must never replay financial state changes.
+        await repository.completeMessage(input.id);
         return result;
       });
       return { acknowledge: true, ...reply, userId: user.id };
@@ -787,7 +791,19 @@ export class PennyService {
     challenge: PendingVerification,
     identity: VerifiedIdentity,
   ): Promise<string> {
-    const user = await this.repository.getUser(userId);
+    return this.repository.transaction((repository) =>
+      this.completeVerificationWith(repository, userId, challenge, identity),
+    );
+  }
+
+  private async completeVerificationWith(
+    repository: PennyRepository,
+    userId: string,
+    challenge: PendingVerification,
+    identity: VerifiedIdentity,
+  ): Promise<string> {
+    await repository.lockUser(userId);
+    const user = await repository.getUser(userId);
     if (!user) throw new Error("Unknown Penny user");
     const mandate = user.mandate;
     if (challenge.expiresAt <= Date.now())
@@ -797,19 +813,20 @@ export class PennyService {
       (mandate.verifiedSubject && mandate.verifiedSubject !== identity.subject)
     )
       throw new Error("Verified identity does not match this Penny user");
-    await this.repository.linkAuth0Subject(userId, identity.subject);
-    await this.audit(userId, "verification_succeeded", {
-      action: challenge.action,
-      subjectDigest: digest(identity.subject),
-    });
+    // Validate action binding before linking a durable identity.
     if (challenge.action === "approve_plan") {
-      const proposal = await this.repository.getProposal(challenge.resourceId);
+      const proposal = await repository.getProposal(challenge.resourceId);
       if (!proposal || proposal.userId !== userId)
         throw new Error("Verification is not bound to this proposal and user");
+      await repository.linkAuth0Subject(userId, identity.subject);
+      await this.auditWith(repository, userId, "verification_succeeded", {
+        action: challenge.action,
+        subjectDigest: digest(identity.subject),
+      });
       if (proposal.status === "approved") {
-        const existing = await this.repository.getSimulationByUser(userId);
+        const existing = await repository.getSimulationByUser(userId);
         if (!existing)
-          await this.repository.saveSimulation(
+          await repository.saveSimulation(
             startSimulation(userId, proposal.id, proposal.investableCashCents),
           );
         return "That simulated plan was already approved; no duplicate action was taken.";
@@ -830,17 +847,17 @@ export class PennyService {
             ? "medium"
             : mandate.riskPreference,
       );
-      await this.repository.saveProposal({ ...proposal, status: "approved" });
-      await this.repository.saveSimulation(simulation);
+      await repository.saveProposal({ ...proposal, status: "approved" });
+      await repository.saveSimulation(simulation);
       const { pendingProposalId: _pending, ...withoutPending } = mandate;
-      await this.repository.saveMandate({
+      await repository.saveMandate({
         ...withoutPending,
         approvedProposalId: proposal.id,
         verifiedSubject: identity.subject,
         verifiedAt: identity.verifiedAt,
         version: mandate.version + 1,
       });
-      await this.audit(userId, "simulation_started", {
+      await this.auditWith(repository, userId, "simulation_started", {
         proposalId: proposal.id,
         simulatedInitialCents: simulation.initialCents,
         protectedCashCents: proposal.protectedCashCents,
@@ -857,6 +874,12 @@ export class PennyService {
         !encodedLabel
       )
         throw new Error("Verification is not bound to this mandate change");
+      await this.recordSuccessfulVerification(
+        repository,
+        userId,
+        challenge,
+        identity,
+      );
       const amountCents = Number(amountText);
       const expense: Expense = {
         id: `exp_${randomUUID()}`,
@@ -877,7 +900,7 @@ export class PennyService {
         },
         this.now(),
       );
-      await this.repository.saveMandate({
+      await repository.saveMandate({
         ...mandate,
         expenses,
         protectedCashCents: safety.protectedCashCents,
@@ -886,7 +909,7 @@ export class PennyService {
         verifiedAt: identity.verifiedAt,
         version: mandate.version + 1,
       });
-      await this.audit(userId, "mandate_changed", {
+      await this.auditWith(repository, userId, "mandate_changed", {
         amountCents,
         reasonCodes: safety.reasonCodes,
         contributionsPaused: safety.pauseContributions,
@@ -903,7 +926,13 @@ export class PennyService {
         Number(versionText) !== mandate.version
       )
         throw new Error("Verification is not bound to this risk change");
-      await this.repository.saveMandate({
+      await this.recordSuccessfulVerification(
+        repository,
+        userId,
+        challenge,
+        identity,
+      );
+      await repository.saveMandate({
         ...mandate,
         riskPreference: risk as "low" | "medium" | "high",
         verifiedSubject: identity.subject,
@@ -921,18 +950,26 @@ export class PennyService {
         Number(versionText) !== mandate.version
       )
         throw new Error("Verification is not bound to this withdrawal");
+      await this.recordSuccessfulVerification(
+        repository,
+        userId,
+        challenge,
+        identity,
+      );
       const amountCents = Number(amountText);
-      const portfolio = await this.repository.getSimulationByUser(userId);
+      const portfolio = await repository.getSimulationByUser(userId);
       if (!portfolio) throw new Error("No active paper portfolio");
       const updated = withdrawFromPortfolio(portfolio, amountCents, this.now());
-      await this.repository.saveSimulation(updated);
-      await this.repository.saveMandate({
+      await repository.saveSimulation(updated);
+      await repository.saveMandate({
         ...mandate,
         verifiedSubject: identity.subject,
         verifiedAt: identity.verifiedAt,
         version: mandate.version + 1,
       });
-      await this.audit(userId, "simulated_withdrawal", { amountCents });
+      await this.auditWith(repository, userId, "simulated_withdrawal", {
+        amountCents,
+      });
       return `Verified. I simulated a ${formatDollars(amountCents)} withdrawal. The paper portfolio is now ${formatDollars(updated.currentCents)}. No real money moved.`;
     }
     if (challenge.action === "increase_contribution") {
@@ -947,12 +984,18 @@ export class PennyService {
         throw new Error(
           "Verification is not bound to this contribution change",
         );
+      await this.recordSuccessfulVerification(
+        repository,
+        userId,
+        challenge,
+        identity,
+      );
       const amountCents = Number(amountText);
-      const portfolio = await this.repository.getSimulationByUser(userId);
+      const portfolio = await repository.getSimulationByUser(userId);
       if (!portfolio) throw new Error("No active paper portfolio");
       const updated = contributeToPortfolio(portfolio, amountCents, this.now());
-      await this.repository.saveSimulation(updated);
-      await this.repository.saveMandate({
+      await repository.saveSimulation(updated);
+      await repository.saveMandate({
         ...mandate,
         recurringContributionCents:
           cadence === "recurring"
@@ -962,24 +1005,35 @@ export class PennyService {
         verifiedAt: identity.verifiedAt,
         version: mandate.version + 1,
       });
-      await this.audit(userId, "simulated_contribution_increased", {
-        amountCents,
-        recurring: cadence === "recurring",
-      });
+      await this.auditWith(
+        repository,
+        userId,
+        "simulated_contribution_increased",
+        {
+          amountCents,
+          recurring: cadence === "recurring",
+        },
+      );
       return `Verified. I added ${formatDollars(amountCents)} to the diversified paper portfolio${cadence === "recurring" ? " and updated the recurring simulated contribution" : ""}. No real money moved.`;
     }
     if (challenge.resourceId !== userId)
       throw new Error("Verification is not bound to this user action");
+    await this.recordSuccessfulVerification(
+      repository,
+      userId,
+      challenge,
+      identity,
+    );
     if (challenge.action === "reset") {
-      const simulation = await this.repository.getSimulationByUser(userId);
+      const simulation = await repository.getSimulationByUser(userId);
       if (simulation)
-        await this.repository.saveSimulation({
+        await repository.saveSimulation({
           ...simulation,
           currentCents: simulation.initialCents,
           tick: 0,
           status: "reset",
         });
-      await this.repository.saveMandate({
+      await repository.saveMandate({
         ...mandate,
         approvedProposalId: undefined,
         contributionsPaused: false,
@@ -990,7 +1044,7 @@ export class PennyService {
       return "Verified. The paper simulation was reset. No real money moved.";
     }
     const paused = challenge.action === "pause";
-    await this.repository.saveMandate({
+    await repository.saveMandate({
       ...mandate,
       contributionsPaused: paused,
       verifiedSubject: identity.subject,
@@ -1000,13 +1054,36 @@ export class PennyService {
     return `Verified. Future simulated contributions are ${paused ? "paused" : "resumed"}. No real money moved.`;
   }
 
+  private async recordSuccessfulVerification(
+    repository: PennyRepository,
+    userId: string,
+    challenge: PendingVerification,
+    identity: VerifiedIdentity,
+  ): Promise<void> {
+    await repository.linkAuth0Subject(userId, identity.subject);
+    await this.auditWith(repository, userId, "verification_succeeded", {
+      action: challenge.action,
+      subjectDigest: digest(identity.subject),
+    });
+  }
+
   async createProactiveUpdate(userId: string): Promise<string> {
     return (await this.createProactiveUpdateReply(userId)).text ?? "";
   }
 
   async createProactiveUpdateReply(userId: string): Promise<PennyReply> {
-    const user = await this.repository.getUser(userId);
-    const simulation = await this.repository.getSimulationByUser(userId);
+    return this.repository.transaction(async (repository) => {
+      await repository.lockUser(userId);
+      return this.createProactiveUpdateReplyWith(repository, userId);
+    });
+  }
+
+  private async createProactiveUpdateReplyWith(
+    repository: PennyRepository,
+    userId: string,
+  ): Promise<PennyReply> {
+    const user = await repository.getUser(userId);
+    const simulation = await repository.getSimulationByUser(userId);
     if (!user || !simulation) throw new Error("No active simulation");
     const updated = advancePortfolioWeek(
       simulation,
@@ -1014,8 +1091,8 @@ export class PennyService {
       undefined,
       this.now(),
     );
-    await this.repository.saveSimulation(updated);
-    await this.audit(userId, "simulation_tick", {
+    await repository.saveSimulation(updated);
+    await this.auditWith(repository, userId, "simulation_tick", {
       tick: updated.tick,
       simulatedBalanceCents: updated.currentCents,
     });

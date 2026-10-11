@@ -49,6 +49,14 @@ export class PostgresRepository implements PennyRepository {
     }
   }
 
+  async lockUser(userId: string): Promise<void> {
+    if (!this.inTransaction)
+      throw new Error("User locks require a repository transaction");
+    await this.pool.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+      userId,
+    ]);
+  }
+
   async claimMessage(messageId: string): Promise<boolean> {
     const result = await this.pool.query(
       `INSERT INTO message_receipts(message_id, status) VALUES($1, 'processing')
@@ -437,6 +445,15 @@ export class PostgresRepository implements PennyRepository {
     return result.rows[0]?.body;
   }
   async saveSimulation(simulation: Simulation): Promise<void> {
+    if (!this.inTransaction && this.rootPool) {
+      await this.transaction((repository) =>
+        repository.saveSimulation(simulation),
+      );
+      return;
+    }
+    // Serialize portfolio writers for this user and replace an old portfolio
+    // identity safely when a reset user activates a new proposal.
+    await this.lockUser(simulation.userId);
     await this.pool.query(
       `INSERT INTO simulations(user_id,body,id,starting_amount_cents,current_value_cents,status,updated_at)
        VALUES($1,$2,$3,$4,$5,$6,now()) ON CONFLICT(user_id) DO UPDATE SET
@@ -452,9 +469,13 @@ export class PostgresRepository implements PennyRepository {
       ],
     );
     await this.pool.query(
+      "DELETE FROM portfolios WHERE user_id=$1 AND id<>$2",
+      [simulation.userId, simulation.id],
+    );
+    await this.pool.query(
       `INSERT INTO portfolios(id,user_id,proposal_id,risk_preference,seed,initial_cents,current_cents,week,status,updated_at)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,now()) ON CONFLICT(user_id) DO UPDATE SET
-       id=EXCLUDED.id,proposal_id=EXCLUDED.proposal_id,risk_preference=EXCLUDED.risk_preference,
+       proposal_id=EXCLUDED.proposal_id,risk_preference=EXCLUDED.risk_preference,
        seed=EXCLUDED.seed,initial_cents=EXCLUDED.initial_cents,current_cents=EXCLUDED.current_cents,
        week=EXCLUDED.week,status=EXCLUDED.status,updated_at=now()`,
       [
@@ -561,6 +582,7 @@ function rowToUser(row: {
   consent_version: string;
   mandate: Mandate;
 }): UserRecord {
+  const mandate = normalizeMandate(row.id, row.consent_version, row.mandate);
   return {
     id: row.id,
     photonUserId: row.photon_user_id,
@@ -568,6 +590,39 @@ function rowToUser(row: {
     ...(row.auth0_subject ? { auth0Subject: row.auth0_subject } : {}),
     verificationStatus: row.verification_status,
     consentVersion: row.consent_version,
-    mandate: row.mandate,
+    mandate,
+  };
+}
+
+function normalizeMandate(
+  userId: string,
+  consentVersion: string,
+  mandate: Partial<Mandate>,
+): Mandate {
+  const legacyRisk = mandate.riskPreference as string | undefined;
+  const riskPreference =
+    legacyRisk === "conservative"
+      ? "low"
+      : legacyRisk === "moderate"
+        ? "medium"
+        : legacyRisk === "aggressive"
+          ? "high"
+          : ["low", "medium", "high"].includes(legacyRisk ?? "")
+            ? (legacyRisk as "low" | "medium" | "high")
+            : "unknown";
+  return {
+    ...mandate,
+    userId,
+    expenses: Array.isArray(mandate.expenses) ? mandate.expenses : [],
+    goals: Array.isArray(mandate.goals) ? mandate.goals : [],
+    incomeChanges: Array.isArray(mandate.incomeChanges)
+      ? mandate.incomeChanges
+      : [],
+    riskPreference,
+    protectedCashCents: mandate.protectedCashCents ?? 0,
+    recurringContributionCents: mandate.recurringContributionCents ?? 0,
+    contributionsPaused: mandate.contributionsPaused ?? false,
+    consentVersion: mandate.consentVersion ?? consentVersion,
+    version: mandate.version ?? 1,
   };
 }

@@ -10,6 +10,8 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
+    "migrate": "node dist/migrate.js",
+    "start:production": "npm run migrate && npm start",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
