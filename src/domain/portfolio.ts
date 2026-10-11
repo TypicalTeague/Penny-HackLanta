@@ -251,6 +251,43 @@ export function withdrawFromPortfolio(
   };
 }
 
+export function contributeToPortfolio(
+  portfolio: Simulation,
+  amountCents: number,
+  now = new Date(),
+): Simulation {
+  assertMoney(amountCents);
+  const total = portfolio.currentCents + amountCents;
+  const weights = Object.fromEntries(
+    portfolio.positions.map((p) => [p.assetClass, p.targetWeightBps]),
+  ) as Record<AssetClass, number>;
+  const positions = allocateExact(total, weights);
+  const transactions = positions.flatMap((next) => {
+    const before = portfolio.positions.find(
+      (p) => p.assetClass === next.assetClass,
+    )!.valueCents;
+    return before === next.valueCents
+      ? []
+      : [
+          transaction(
+            portfolio.id,
+            "contribution",
+            next.assetClass,
+            next.valueCents - before,
+            next.valueCents,
+            portfolio.tick,
+            now,
+          ),
+        ];
+  });
+  return {
+    ...portfolio,
+    positions,
+    currentCents: total,
+    transactions: [...portfolio.transactions, ...transactions],
+  };
+}
+
 export function seededReturnBps(
   seed: number,
   week: number,
