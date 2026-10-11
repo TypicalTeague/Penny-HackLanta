@@ -8,6 +8,7 @@ import { evaluateSafety } from "../domain/safety.js";
 import {
   MODEL_PORTFOLIOS,
   advancePortfolioWeek,
+  contributeToPortfolio,
   createPortfolio,
   withdrawFromPortfolio,
 } from "../domain/portfolio.js";
@@ -203,6 +204,13 @@ export class PennyService {
         };
       case "explore_withdrawal":
         return this.requestWithdrawal(repository, context, parsed, messageId);
+      case "increase_contribution":
+        return this.requestContributionIncrease(
+          repository,
+          context,
+          parsed,
+          messageId,
+        );
       case "continue_plan":
         return {
           text: "Okay—your current paper mandate stays unchanged. Your real-life expense is still saved, and no simulated transaction occurred.",
@@ -742,6 +750,38 @@ export class PennyService {
     };
   }
 
+  private async requestContributionIncrease(
+    repository: PennyRepository,
+    context: UserContext,
+    parsed: Interpretation,
+    messageId: string,
+  ): Promise<PennyReply> {
+    const change = context.mandate.incomeChanges.at(-1);
+    const amount = parsed.expenseAmountCents ?? change?.amountCents;
+    if (!amount)
+      return { text: "How much should the simulated contribution increase?" };
+    if (!context.simulation)
+      return {
+        text: "Approve an initial paper mandate before increasing simulated contributions.",
+      };
+    const recurring = change?.recurring === true;
+    const challenge = await this.verification.start(
+      "increase_contribution",
+      `contribution:${context.user.id}:${amount}:${recurring ? "recurring" : "once"}:${context.mandate.version}`,
+    );
+    await this.auditWith(
+      repository,
+      context.user.id,
+      "verification_started",
+      { action: "increase_contribution", amountCents: amount, recurring },
+      messageId,
+    );
+    return {
+      text: `Adding ${formatDollars(amount)} to the paper portfolio${recurring ? " and its recurring contribution" : ""} changes your mandate. ${verificationCopy(challenge)}`,
+      verification: challenge,
+    };
+  }
+
   async completeVerification(
     userId: string,
     challenge: PendingVerification,
@@ -894,6 +934,39 @@ export class PennyService {
       });
       await this.audit(userId, "simulated_withdrawal", { amountCents });
       return `Verified. I simulated a ${formatDollars(amountCents)} withdrawal. The paper portfolio is now ${formatDollars(updated.currentCents)}. No real money moved.`;
+    }
+    if (challenge.action === "increase_contribution") {
+      const [kind, boundUser, amountText, cadence, versionText] =
+        challenge.resourceId.split(":");
+      if (
+        kind !== "contribution" ||
+        boundUser !== userId ||
+        Number(versionText) !== mandate.version ||
+        !["once", "recurring"].includes(cadence ?? "")
+      )
+        throw new Error(
+          "Verification is not bound to this contribution change",
+        );
+      const amountCents = Number(amountText);
+      const portfolio = await this.repository.getSimulationByUser(userId);
+      if (!portfolio) throw new Error("No active paper portfolio");
+      const updated = contributeToPortfolio(portfolio, amountCents, this.now());
+      await this.repository.saveSimulation(updated);
+      await this.repository.saveMandate({
+        ...mandate,
+        recurringContributionCents:
+          cadence === "recurring"
+            ? (mandate.recurringContributionCents ?? 0) + amountCents
+            : (mandate.recurringContributionCents ?? 0),
+        verifiedSubject: identity.subject,
+        verifiedAt: identity.verifiedAt,
+        version: mandate.version + 1,
+      });
+      await this.audit(userId, "simulated_contribution_increased", {
+        amountCents,
+        recurring: cadence === "recurring",
+      });
+      return `Verified. I added ${formatDollars(amountCents)} to the diversified paper portfolio${cadence === "recurring" ? " and updated the recurring simulated contribution" : ""}. No real money moved.`;
     }
     if (challenge.resourceId !== userId)
       throw new Error("Verification is not bound to this user action");
