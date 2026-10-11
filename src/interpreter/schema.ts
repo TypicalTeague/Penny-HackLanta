@@ -10,6 +10,7 @@ export const intentValues = [
   "select_risk",
   "adjust_plan",
   "explore_withdrawal",
+  "increase_contribution",
   "continue_plan",
   "approve_plan",
   "reject_plan",
