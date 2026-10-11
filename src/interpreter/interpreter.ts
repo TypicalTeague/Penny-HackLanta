@@ -155,6 +155,10 @@ export class LocalDemoInterpreter implements Interpreter {
       return result("explore_withdrawal", {
         expenseAmountCents: amounts[0] ?? null,
       });
+    if (/propose an increase|increase contribution/i.test(lower))
+      return result("increase_contribution", {
+        expenseAmountCents: amounts[0] ?? null,
+      });
     if (/keep my current plan|continue/i.test(lower))
       return result("continue_plan");
     if (/bonus/i.test(lower))
