@@ -1,6 +1,9 @@
 modules = ["nodejs-20"]
 run = "npm run start:production"
 
+[env]
+PENNY_BROKERAGE_PROVIDER = "alpaca"
+
 [deployment]
 build = "npm ci && npm run build"
 run = "npm run start:production"
