@@ -1,0 +1,37 @@
+{
+  "name": "penny-imessage-companion",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Penny: an iMessage-first, safety-led paper investing companion",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run format:check && npm run typecheck && npm test && npm run build",
+    "smoke": "PENNY_TRANSPORT=terminal PENNY_INTERPRETER=local node dist/index.js --smoke"
+  },
+  "dependencies": {
+    "@google/genai": "^1.27.0",
+    "jose": "^6.1.0",
+    "pg": "^8.16.3",
+    "spectrum-ts": "12.2.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "@types/pg": "^8.15.6",
+    "prettier": "^3.6.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.8"
+  }
+}

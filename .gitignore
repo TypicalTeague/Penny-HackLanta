@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+.env
+*.log
+.DS_Store
+AGENTS.md
+sources/
+*.png
+.codex/
+.agents/
+.aws/
+.local/
